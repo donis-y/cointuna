@@ -2,10 +2,16 @@ package main
 
 import (
 	"cointuna/dto"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/joho/godotenv"
 	"io/ioutil"
+	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -27,8 +33,7 @@ type Data struct {
 }
 
 type HeaderKeyValues struct {
-	Schema []SchemaItem `json:"__schema__"`
-	// 이 부분은 dynamic keys를 가지므로 map을 사용할 수 있음
+	Schema      []SchemaItem          `json:"__schema__"`
 	DynamicKeys map[string]KeyValue `json:"-"`
 }
 
@@ -83,73 +88,58 @@ type BlockInspectorURL struct {
 }
 
 func main() {
+	// .env 파일 로드
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
+	// 환경 변수에서 데이터베이스 연결 정보 읽기
+	dbUser := os.Getenv("DB_USER")
+	dbPassword := os.Getenv("DB_PASSWORD")
+
+	dbHost := os.Getenv("DB_HOST")
+	dbPort := os.Getenv("DB_PORT")
+	dbName := os.Getenv("DB_NAME")
+
+	// DSN (Data Source Name) 생성
+	// 사용자 이름이나 비밀번호에 특수문자가 포함될 경우를 대비해 URL 인코딩을 수행합니다.
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s",
+		url.QueryEscape(dbUser),
+		url.QueryEscape(dbPassword),
+		dbHost,
+		dbPort,
+		dbName,
+	)
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Successfully connected to MariaDB!")
+
 	marketUrl := "https://api.upbit.com/v1/market/all"
 	body := apiGet(marketUrl)
 
-	// JSON 응답을 파싱하여 MarketCoinInfoResponse 슬라이스로 변환
 	var marketsAll []dto.MarketCoinInfoResponse
-	err := json.Unmarshal(body, &marketsAll)
+	err = json.Unmarshal(body, &marketsAll)
 	if err != nil {
-		fmt.Println("JSON 파싱 중 에러 발생:", err)
+		log.Println("JSON 파싱 중 에러 발생:", err)
 		return
 	}
 
 	var marketsKRW []dto.MarketCoinInfoResponse
-	var marketsBTC []dto.MarketCoinInfoResponse
-	var marketsUSDT []dto.MarketCoinInfoResponse
-
-	// 파싱된 데이터 출력
 	for _, market := range marketsAll {
-
 		if strings.HasPrefix(market.Market, "KRW") {
 			marketsKRW = append(marketsKRW, market)
 		}
-
-		if strings.HasPrefix(market.Market, "BTC") {
-			marketsBTC = append(marketsBTC, market)
-		}
-		if strings.HasPrefix(market.Market, "USDT") {
-			marketsUSDT = append(marketsUSDT, market)
-		}
-
-		fmt.Printf("Market: %s, Korean Name: %s, English Name: %s\n", market.Market, market.KoreanName, market.EnglishName)
 	}
-
-	fmt.Printf("끝\n\n\n\n\n\n\n")
-	var tickerListKRW []string
-	var tickerListBTC []string
-	var tickerListUSDT []string
-	for _, market := range marketsKRW {
-		ticker := strings.Split(market.Market, "-")
-		tickerListKRW = append(tickerListKRW, ticker[1])
-		fmt.Printf("Market: %s, Korean Name: %s, English Name: %s\n", market.Market, market.KoreanName, market.EnglishName)
-
-	}
-
-	for _, market := range marketsBTC {
-		ticker := strings.Split(market.Market, "-")
-		tickerListBTC = append(tickerListBTC, ticker[1])
-		fmt.Printf("Market: %s, Korean Name: %s, English Name: %s\n", market.Market, market.KoreanName, market.EnglishName)
-
-	}
-
-	for _, market := range marketsUSDT {
-		ticker := strings.Split(market.Market, "-")
-		tickerListUSDT = append(tickerListUSDT, ticker[1])
-		fmt.Printf("Market: %s, Korean Name: %s, English Name: %s\n", market.Market, market.KoreanName, market.EnglishName)
-	}
-
-	var coinDetailUrlList []string
-	for _, ticker := range marketsKRW {
-		marketInfo := "https://api-manager.upbit.com/api/v1/coin_info/pub/%s.json"
-		fmt.Printf("티커 %s\n", ticker)
-		url := fmt.Sprintf(marketInfo, ticker)
-		coinDetailUrlList = append(coinDetailUrlList, url)
-		fmt.Println(url)
-	}
-	fmt.Printf("KRW 총개수 %d, ", len(tickerListKRW))
-	fmt.Printf("BTC 총개수 %d, ", len(tickerListBTC))
-	fmt.Printf("USDT 총개수 %d\n", len(tickerListUSDT))
 
 	index := 0
 	for _, market := range marketsKRW {
@@ -158,13 +148,11 @@ func main() {
 		urlForm := "https://api-manager.upbit.com/api/v1/coin_info/pub/%s.json"
 		coinDetailUrl := fmt.Sprintf(urlForm, ticker[1])
 		body = apiGet(coinDetailUrl)
-		//fmt.Printf("가자 %s\n", coinDetailUrl)
-		// JSON 응답을 파싱하여 CoinDetailResponse 로 변환
+
 		var coinDetailResponse CoinDetailResponse
-		//var coinDetailResponse []dto.MarketCoinInfoResponse
 		err := json.Unmarshal(body, &coinDetailResponse)
 		if err != nil {
-			fmt.Println("JSON 파싱 중 에러 발생:", err)
+			log.Println("JSON 파싱 중 에러 발생:", err)
 			return
 		}
 
@@ -174,58 +162,66 @@ func main() {
 				multiply := float64(1000000000000)
 				c := strings.Replace(coinDetailResponse.Data.MarketData.CoinMarketCap.MarketCap, "조원", "", -1)
 				cap, err := strconv.ParseFloat(c, 64)
-				if err != nil {
-					fmt.Println("ParseFloat 중 에러 발생:", err)
+				if err == nil {
+					numberCap = int(cap * multiply)
 				}
-				numberCap = int(cap * multiply)
 			} else if strings.Contains(coinDetailResponse.Data.MarketData.CoinMarketCap.MarketCap, "억원") {
 				multiply := float64(100000000)
 				c := strings.Replace(coinDetailResponse.Data.MarketData.CoinMarketCap.MarketCap, "억원", "", -1)
 				cap, err := strconv.ParseFloat(c, 64)
-				numberCap = int(cap * multiply)
-				if err != nil {
-					fmt.Println("ParseFloat 중 에러 발생:", err)
+				if err == nil {
+					numberCap = int(cap * multiply)
 				}
 			}
 
 			urlForm = "https://api.upbit.com/v1/candles/days?market=%s&count=1"
 			coinPriceUrl := fmt.Sprintf(urlForm, market.Market)
 			body = apiGet(coinPriceUrl)
-			// JSON 응답을 파싱하여 coinPriceInfoResponse 로 변환
+
 			var coinPriceInfoResponse []dto.CoinPriceInfoResponse
-			//var coinDetailResponse []dto.MarketCoinInfoResponse
 			err := json.Unmarshal(body, &coinPriceInfoResponse)
 			if err != nil {
-				fmt.Printf("url %s\n", coinPriceUrl)
-				fmt.Println("JSON 파싱 중 에러 발생:", err)
+				log.Printf("url %s", coinPriceUrl)
+				log.Println("JSON 파싱 중 에러 발생:", err)
 				return
 			}
 
-			fmt.Printf("%d|%s|%s|%s|%s|%f\n", numberCap, coinDetailResponse.Data.MarketData.CoinMarketCap.MarketCap, ticker[1], market.KoreanName, market.EnglishName, coinPriceInfoResponse[0].TradePrice)
+			// 데이터베이스에 저장
+			stmt, err := db.Prepare("INSERT INTO coin_info(market_cap_num, market_cap_str, ticker, korean_name, english_name, trade_price) VALUES(?, ?, ?, ?, ?, ?)")
+			if err != nil {
+				log.Println(err)
+				continue
+			}
+			defer stmt.Close()
 
-			if index%10 == 0 { // REST API 요청 수 제한으로 sleep. 초당 10회 (종목, 캔들, 체결, 티커, 호가별 각각 적용)
+			_, err = stmt.Exec(numberCap, coinDetailResponse.Data.MarketData.CoinMarketCap.MarketCap, ticker[1], market.KoreanName, market.EnglishName, coinPriceInfoResponse[0].TradePrice)
+			if err != nil {
+				log.Println(err)
+				continue
+			}
+
+			log.Printf("Saved: (%d/%d) %s (%s)", index, len(marketsKRW), market.KoreanName, market.Market)
+
+			if index%10 == 0 {
 				time.Sleep(time.Second)
 			}
 		} else {
-			fmt.Printf("실패 Market: %s, Korean Name: %s, English Name: %s\n", market.Market, market.KoreanName, market.EnglishName)
+			log.Printf("실패 Market: %s, Korean Name: %s, English Name: %s", market.Market, market.KoreanName, market.EnglishName)
 		}
-
 	}
-
 }
 
 func apiGet(url string) []byte {
-	// Upbit API에서 시장 정보를 가져옴
 	resp, err := http.Get(url)
 	if err != nil {
-		fmt.Println("API 호출 중 에러 발생:", err)
+		log.Println("API 호출 중 에러 발생:", err)
 		return nil
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Println("응답 읽기 중 에러 발생:", err)
+		log.Println("응답 읽기 중 에러 발생:", err)
 		return nil
 	}
 	return body
